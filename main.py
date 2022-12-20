@@ -39,9 +39,10 @@ if __name__ == "__main__":
 
     # Alos palsar download
     basin_gdv.to_crs(4326)
-    boundary = basin_gdv.extract_sub_data('NAME', [basin_names[0]])
+    i = 0
+    boundary = basin_gdv.extract_sub_data('NAME', [basin_names[i]])
     # boundary = boundary_df['geometry'].values[0]
-    img_des = ALOSUtils.download_alos_palsar(boundary, basin_names[0], 3000)
+    img_des = ALOSUtils.download_alos_palsar(boundary, basin_names[i].lower().replace(" ", "_"), 3000)
 
     # SRTM download
     # bounds = boundary_df.bounds.to_dict()
