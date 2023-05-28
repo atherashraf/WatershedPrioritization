@@ -1,11 +1,14 @@
 import datetime
+import math
 import os
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 
 from digitalarztools.datasets.lulc import LandUseLandCover
 from digitalarztools.datasets.precipitation import Precipitation
+from digitalarztools.pipelines.fao_livestock import GWL3
 from digitalarztools.pipelines.gee.core.image import GEEImage
 from digitalarztools.raster.rio_raster import RioRaster
 from settings import CONFIG_DIR, MEDIA_DIR
@@ -21,6 +24,11 @@ from digitalarztools.vector.gpd_vector import GPDVector
 class WatershedPrioritization:
     def __init__(self, river_basin: GPDVector):
         self.river_basin = river_basin
+
+    def get_aoi(self) -> gpd.GeoDataFrame:
+        aoi = self.river_basin.get_unary_union()
+        gdf = gpd.GeoDataFrame(geometry=[aoi], crs=self.river_basin.get_crs())
+        return gdf
 
     def get_gee_auth_region(self):
         gee_service_account_fp = os.path.join(CONFIG_DIR, 'goolgle-earth-engine-3bf316104d2c.json')
@@ -50,32 +58,48 @@ class WatershedPrioritization:
                     
         """
         raster = RioRaster(esa_fp)
-        # raster.resample_raster_res(1000/(110*1000))
-        raster.clip_raster(self.river_basin.get_unary_union(), crs=self.river_basin.get_crs())
-        vegetation_pixels = [20, 30, 40]
-        built_up_pixels = [50]
-        water_bodies = [80, 90, 95]
-        """
-        creating vegetation distance raster
-        """
-        vegetation_fp = os.path.join(output_dir, 'vegetation.tif')
+        # spatial_res_meter = raster.get_spatial_resoultion(in_meter=True)
+        # count_value = BandProcess.get_value_area_data(raster.get_data_array(1), raster.get_nodata_value(), spatial_res_meter )
+        raster.resample_raster_res(1000 / (110 * 1000))
         spatial_res_meter = raster.get_spatial_resoultion(in_meter=True)
-        print("spatial res in meter", spatial_res_meter)
-        if not os.path.exists(vegetation_fp):
-            vegetation_data = BandProcess.create_distance_raster(raster.get_data_array(1), vegetation_pixels,
-                                                                 spatial_res_meter[0] / 1000)
-            vegetation_data = BandProcess.min_max_stretch(vegetation_data, raster.get_nodata_value(),
-                                                          stretch_range=(0, 1), is_inverse=True)
-            veg_raster = raster.rio_raster_from_array(vegetation_data)
-            veg_raster.save_to_file(vegetation_fp)
+        res = math.floor(spatial_res_meter[0]/1000)
+        # count_value_km = BandProcess.get_value_area_data(raster.get_data_array(1), raster.get_nodata_value(), spatial_res_meter)
+
+        # raster.clip_raster(self.river_basin.get_unary_union(), crs=self.river_basin.get_crs())
+        surfaces = {
+            "builtup": {
+                "pixels": [50],
+                "fp": os.path.join(output_dir, f'builtup_normalized_{res}.tif')
+            },
+            "vegetation": {
+                "pixels": [20, 30, 40],
+                "fp": os.path.join(output_dir, f'vegetation_normalized_{res}.tif')
+            },
+            "water_bodies": {
+                "pixels": [80, 90, 95],
+                "fp": os.path.join(output_dir, f'water_bodies_normalized_{res}.tif')
+            }
+        }
         """
-            creating built up distance raster
+        creating inverse distance surfaces normalize to 0-1 
+        1 mean lc pixel <1 mean far from  lc 
         """
-        # built_up_fp = os.path.join(output_dir, 'built_up.tif')
-        # if not os.path.exists(built_up_fp):
-        #     built_up_data = BandProcess.get_boolean_raster(raster.get_data_array(1), built_up_pixels)
-        #     bu_raster = raster.rio_raster_from_array(built_up_data)
-        #     bu_raster.save_to_file(built_up_fp)
+        no_data = raster.get_nodata_value()
+        lulc_rasters = []
+        # water_bodies_raster,  vegetation_raster, built_up_raster = None, None, None
+        for key in surfaces:
+            surface = surfaces[key]
+            # print("spatial res in meter", spatial_res_meter)
+            if not os.path.exists(surface["fp"]):
+                data = BandProcess.create_distance_raster(raster.get_data_array(1), surface["pixels"],
+                                                                     spatial_res_meter[0] / 1000)
+                data = BandProcess.min_max_normalization(data, no_data,  is_inverse=True)
+                raster = raster.rio_raster_from_array(data)
+                raster.clip_raster(self.get_aoi())
+                raster.save_to_file(surface["fp"])
+                lulc_rasters.append({"key": key, "raster": raster})
+            else:
+                lulc_rasters.append({"key": key, "raster": RioRaster(surface["fp"])})
 
     def precipitation_surface(self, no_of_year: int):
         """
@@ -149,12 +173,59 @@ class WatershedPrioritization:
             rp_data = gd.calculate_event_probability(data)
             rp_data = np.array(rp_data)
             # rp_data = rp_data.reshape((orig_shape[1],orig_shape[2]))
-            stretched_rp_data = BandProcess.min_max_stretch(rp_data, raster.get_nodata_value(), (0, 1))
+            stretched_rp_data = BandProcess.min_max_normalization(rp_data, raster.get_nodata_value())
             rp_raster = raster.rio_raster_from_array(stretched_rp_data.reshape((orig_shape[1], orig_shape[2])))
             rp_raster.resample_raster_res(1000 / (110 * 1000))
             rp_raster.clip_raster(clip_polygon, crs=self.river_basin.get_crs())
             rp_raster.save_to_file(probability_raster_fp)
             # df = pd.DataFrame({"avg_rainfall": data, "return_period": rp_data, "stretched": stretched_rp_data})
         else:
-            print("precipitation probability raster already available")
-        print("dane")
+            rp_raster = RioRaster(probability_raster_fp)
+            # print("precipitation probability raster already available")
+        return rp_raster
+
+    def population_surface(self):
+        print("processing population surface")
+        output_dir = os.path.join(MEDIA_DIR, 'mca_data', "population")
+        # raster.save_to_file(os.path.join(output_dir, "landsacn_2019.tif"))
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        out_fp = os.path.join(output_dir, "landscan_normalized_2019.tif")
+        if not os.path.exists(out_fp):
+            fp = "/Users/atherashraf/Documents/data/Landscan/landscan-global-2019-assets/landscan-global-2019.tif"
+            raster = RioRaster(fp)
+            raster.clip_raster(self.get_aoi())
+
+            data = raster.get_data_array(1)  # .astype(np.float32)
+            no_data = raster.get_nodata_value()
+            data[data <= 30] = no_data
+            normalized_data = BandProcess.logarithmic_normalization(data, no_data)
+            norm_pop_raster = raster.rio_raster_from_array(normalized_data)
+            norm_pop_raster.clip_raster(self.get_aoi())
+            norm_pop_raster.save_to_file(out_fp)
+        else:
+            norm_pop_raster = RioRaster(out_fp)
+        return norm_pop_raster
+    def livestock_surface(self):
+        dir = os.path.join(MEDIA_DIR, 'mca_data', 'livestock')
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+        fp = os.path.join(dir, 'foa_gwl3.tif')
+        norm_fp = os.path.join(dir,'norm_fao_gwl3.tif')
+        if not os.path.exists(norm_fp):
+            aoi = self.get_aoi()
+            bbox = list(aoi.bounds.to_numpy()[0])
+
+            gwl3_raster : RioRaster = GWL3.download_grid(bbox, fp)
+            data = BandProcess.min_max_normalization(gwl3_raster.get_data_array(1), no_data=gwl3_raster.get_nodata_value())
+            normalized_raster = gwl3_raster.rio_raster_from_array(data)
+            normalized_raster.resample_raster_res(des_resolution=1000/(110*1000))
+            normalized_raster.clip_raster(aoi=aoi)
+            normalized_raster.save_to_file(norm_fp)
+        else:
+            normalized_raster = RioRaster(norm_fp)
+        return normalized_raster
+
+    def irrigation_system(self):
+        pass
+

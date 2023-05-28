@@ -17,25 +17,6 @@ from settings import MEDIA_DIR
 from sklearn import preprocessing
 
 
-def population_data(boundary: GPDVector):
-    fp = "/Users/atherashraf/Documents/data/Landscan/landscan-global-2019-assets/landscan-global-2019.tif"
-    raster = RioRaster(fp)
-    raster.clip_raster(boundary_gdv.gdf)
-    output_dir = os.path.join(MEDIA_DIR, "population")
-    # raster.save_to_file(os.path.join(output_dir, "landsacn_2019.tif"))
-    data = raster.get_data_array(1)  # .astype(np.float32)
-    data[data == raster.get_nodata_value()] = 0
-    data[data <= 30] = 0
-
-    max_val = np.nanmax(data)
-    min_val = np.nanmin(data)
-    # res = data.flatten()
-    c = 1 / np.log(1 + max_val)
-    normalized_data = c * np.log(1 + data)
-    # normalized_data = lognorm.pdf(res, params[0], loc=params[1], scale=params[2])
-    # normalized_data = normalized_data.reshape(data.shape)
-    raster.rio_raster_from_array(normalized_data).save_to_file(os.path.join(output_dir, "landscan_normal_2019.tif"))
-
 
 if __name__ == "__main__":
     ba = BoundaryAnalysis()
@@ -50,9 +31,12 @@ if __name__ == "__main__":
     # print(selected_basin_gdv.head())
     selected_basin_gdv.to_crs(epsg=4326)
     ws_prioritization = WatershedPrioritization(selected_basin_gdv)
-    ws_prioritization.precipitation_surface(20)
-    ws_prioritization.lulc_surface()
-
+    rp_raster = ws_prioritization.precipitation_surface(20)
+    lulc_raster = ws_prioritization.lulc_surface()
+    pop_raster = ws_prioritization.population_surface()
+    livestock_raster = ws_prioritization.livestock_surface()
+    irrigation_raster =  ws_prioritization.irrigation_system()
+    print("done")
     # district_gdv = ba.get_district_gdv()
     # res_gdv = district_gdv.spatial_join(selected_basin_gdv.get_gdf())
     # print(district_gdv.head(5))
